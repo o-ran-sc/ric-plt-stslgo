@@ -1,0 +1,155 @@
+# Wrapper GO module to access the TimeSeriesDB (Currently Influx Db is used, but can be extended to other DBs in future). 
+TimeSeriesDB means InfluxDb as of now for all purposes
+This GO module uses the well defined v1.x GO client library SDK provided by the TimeSeriesDB team.
+This provides APIs for mostly commonly used functionalities and makes accessing TimeSeriesDB easier. 
+But, if needed, XAPP or any other pod can even use the v1.x GO client library SDK directly too.
+
+## APIs
+| API                                     | Description                                                                                                                                                                            |
+|-----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|NewTimeSeriesClientData()                    | Constructor for type TimeSeriesClientData which is used to store connection to timeseriesDB, DB name, username and password.
+|
+|CreateTimeSeriesConnection()                 | Creates a connection to TimeSeriesDB.
+|
+|CreateTimeSeriesDB()                         | Creates the DB specified during the constructor of TimeSeriesClientData.
+|
+|CreateTimeSeriesDBWithRetentionPolicy()      | Creates the DB specified during the constructor of TimeSeriesClientData along with the new retention policy set as default for this database.
+|
+|DeleteTimeSeriesDB()                         | Deletes the DB specified during the constructor of TimeSeriesClientData.
+|
+|DropMeasurement()                        | Deletes the measurement specified as an arguement.
+|
+|CreateRetentionPolicy()                  | Creates a retention policy for a database.
+|
+|UpdateRetentionPolicy()                  | Updates the retention policy of a database.
+|
+|DeleteRetentionPolicy()                  | Deletes the retention policy of a database.
+|
+|Set()                                    | Mimics the traditional set operation of key-value pair. Inserts key-value pair into fieldset of TimeSeriesDB.
+|
+|Get()                                    | Mimics the traditional get operation of key-value pair. Gets the latest by time value of given key.
+|
+|Query()                                  | Generic query API for querying the TimeSeriesDB. Return type is Response structure of TimeSeriesDB GO library.
+|
+|WritePoint()                             | Generic write API to write a set of tags & fields to mentioned measurement/table in TimeSeriesDB.
+|
+|InsertJson()                             | Use to insert JSON object in mentioned measurement/table.
+|
+|InsertJsonArray()                        | Use to insert JSON array as individual rows in mentioned measurement/table. To be used only when top level JSON has array and not when array is nested inside one existing JSON. Eg. Not to be used for UeMetrics with multiple neighbor cells.
+|
+|Flatten()                                | Generic API to flatten JSON data. This will handle nested JSON as well and split it into individual columns.
+|
+
+## Example
+```
+package main
+
+import (
+	"stslgo"
+        "encoding/json"
+        "fmt"
+)
+
+// Test function to test basic get/set functions on TimeSeriesDB
+func TestTimeSeriesDbGetSet(timeserData *TimeSeriesClientData) {
+        // TimeSeriesDB specific intialization start
+        tableName := "SetGetTable"
+        val := "3"
+        newval, err := json.Marshal(&val)
+        err = timeserData.Set(tableName, "a", newval)
+        if err != nil {
+                fmt.Printf("Unable to set data with error %v", err)
+        }
+
+        val = "2"
+        newval, err = json.Marshal(&val)
+        err = timeserData.Set(tableName, "a", newval)
+        if err != nil {
+                fmt.Printf("Unable to set data with error %v", err)
+        }
+        result, err := timeserData.Get(tableName, "a")
+        if err != nil {
+                fmt.Printf("Unable to get data with error %v", err)
+                return
+        }
+        fmt.Printf("Result = %v, type = %T", result, result)
+
+        switch mytype := result.(type) {
+                default:
+                        fmt.Printf("My type is %T and value %v", mytype, mytype)
+        }
+        if newbyte, ok := result.([]byte); ok {
+                var newresult string
+                json.Unmarshal(newbyte, &newresult)
+                fmt.Printf("New Result is = %v", newresult)
+        }
+}
+
+// Test function for testing flattening and inserting of a json array as individual time points
+func TestTimeSeriesDbJsonArrayFlatten(timeserData *TimeSeriesClientData) {
+        // Array of two rows
+        neighborCells := []byte(`[{"CID": "310-680-200-555001", "Cell-RF": {"rsp": -90, "rsrq": -13, "rsSinr": -2.5}}, {"CID": "310-680-200-555003", "Cell-RF": {"rsp": -140, "rsrq": -17, "rsSinr": -6}}]`)
+        ignoreKeyList := []string{}
+
+        err := timeserData.InsertJsonArray("FlattenJsonArrayTable", ignoreKeyList, neighborCells)
+        if err != nil {
+                fmt.Printf("\n Failed to flatten and insert the json array with error %s", err.Error())
+        }
+}
+
+
+func main() {
+        // Allocate and initialize the TimeSeriesClientData structure for TimeSeriesDB access
+        timeserData := NewTimeSeriesClientData("testdb", "", "")
+
+        // TimeSeriesDB specific intialization start
+        err := timeserData.CreateTimeSeriesConnection()
+        if err != nil {
+                return
+        }
+        err = timeserData.CreateTimeSeriesDB()
+        if err != nil {
+                return
+        }
+
+        TestTimeSeriesDbGetSet(timeserData)
+        TestTimeSeriesDbJsonArrayFlatten(timeserData)
+}
+```
+
+## Output of example shown above
+```
+Connected to http://localhost:8086 version 1.8.0
+TimeSeriesDB shell version: 1.8.0
+> show databases
+name: databases
+name
+----
+_internal
+testdb
+
+> use testdb
+Using database testdb
+
+> show measurements
+name: measurements
+name
+----
+FlattenJsonArrayTable
+SetGetTable
+
+> select * from FlattenJsonArrayTable
+name: FlattenJsonArrayTable
+time                CID                Cell-RF.rsSinr Cell-RF.rsp Cell-RF.rsrq
+----                ---                -------------- ----------- ------------
+1629174962020974506 310-680-200-555001 -2.5           -90         -13
+1629174962021005924 310-680-200-555003 -6             -140        -17
+
+> select * from SetGetTable
+name: SetGetTable
+time                a
+----                -
+1629174961982801050 3
+1629174962011419370 2
+
+```
