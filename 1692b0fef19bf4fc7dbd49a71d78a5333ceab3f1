@@ -1,0 +1,55 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "26ca1920_b29b3be4",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000002
+      },
+      "writtenOn": "2022-05-01T16:20:36Z",
+      "side": 1,
+      "message": "Hi,\nI made a quick code review, some comments added into patchset #2. Also docs/release-notes.rst is missing maybe you could add it since all most all of other repos in ORAN gerrit we have release-notes files.\nRegards,\nTimo",
+      "revId": "1692b0fef19bf4fc7dbd49a71d78a5333ceab3f1",
+      "serverId": "84e4e190-e623-4c37-9eda-58b1937c1b53"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "0b66f487_96ebf33e",
+        "filename": "stsl.go",
+        "patchSetId": 2
+      },
+      "lineNbr": 45,
+      "author": {
+        "id": 1000002
+      },
+      "writtenOn": "2022-05-01T16:20:36Z",
+      "side": 1,
+      "message": "Iclient is a public variable, can we use private (iclient) instead of it because this variable by its nature is private information (interface to database backend (influx or UT mock implements it)?",
+      "revId": "1692b0fef19bf4fc7dbd49a71d78a5333ceab3f1",
+      "serverId": "84e4e190-e623-4c37-9eda-58b1937c1b53"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "8cc8931e_94e22a14",
+        "filename": "stsl.go",
+        "patchSetId": 2
+      },
+      "lineNbr": 188,
+      "author": {
+        "id": 1000002
+      },
+      "writtenOn": "2022-05-01T16:20:36Z",
+      "side": 1,
+      "message": "Does these all printf cause logs of logs to stdout, should we use a logging library instead so that we can control amount of logs by configuring logging level?",
+      "revId": "1692b0fef19bf4fc7dbd49a71d78a5333ceab3f1",
+      "serverId": "84e4e190-e623-4c37-9eda-58b1937c1b53"
+    }
+  ]
+}
