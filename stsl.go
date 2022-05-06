@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	_ "github.com/influxdata/influxdb1-client"
 	timesrclient "github.com/influxdata/influxdb1-client/v2"
 )
@@ -54,6 +56,7 @@ type JsonRow map[string]interface{}
 //                                     Constructor for TimeSeriesClientData
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func NewTimeSeriesClientData(dbName, userName, passWord string) *TimeSeriesClientData {
+	zerolog.SetGlobalLevel(zerolog.InfoLevel) //default logging, can be changed using SetLoggingLevel()
 	return &TimeSeriesClientData{
 		timeSeriesDbName:   dbName,
 		timeSeriesUserName: userName,
@@ -74,16 +77,16 @@ func (timeserData *TimeSeriesClientData) CreateTimeSeriesConnection() (err error
 	if port == "" {
 		port = "8086"
 	}
-	fmt.Printf("Establishing connection with TimeSeriesDB hostname: %v, port: %v\n", hostname, port)
+	log.Info().Msgf("Establishing connection with TimeSeriesDB hostname: %v, port: %v\n", hostname, port)
 	(*timeserData).Iclient, err = timesrclient.NewHTTPClient(timesrclient.HTTPConfig{
 		Addr:     fmt.Sprintf("http://%v:%v", hostname, port),
 		Username: (*timeserData).timeSeriesUserName,
 		Password: (*timeserData).timeSeriesPassword,
 	})
 	if err != nil {
-		fmt.Printf("Error creating TimeSeriesDB Client: %v\n", err.Error())
+		log.Error().Msgf("Error creating TimeSeriesDB Client: %v\n", err.Error())
 	} else {
-		fmt.Printf("TimeSeriesDB Client created successfully: %v\n", (*timeserData).Iclient)
+		log.Info().Msgf("TimeSeriesDB Client created successfully: %v\n", (*timeserData).Iclient)
 		defer timeserData.Iclient.Close()
 	}
 	return err
@@ -94,9 +97,9 @@ func (timeserData *TimeSeriesClientData) CreateTimeSeriesDB() (err error) {
 	q := timesrclient.NewQuery(fmt.Sprintf("CREATE DATABASE %v", (*timeserData).timeSeriesDbName), "", "")
 
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully created DB %v\n", (*timeserData).timeSeriesDbName)
+		log.Info().Msgf("Sucessfully created DB %v\n", (*timeserData).timeSeriesDbName)
 	} else {
-		fmt.Printf("Failed to create DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
+		log.Error().Msgf("Failed to create DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
 	}
 	return err
 }
@@ -106,9 +109,9 @@ func (timeserData *TimeSeriesClientData) CreateTimeSeriesDBWithRetentionPolicy(r
 	q := timesrclient.NewQuery(fmt.Sprintf("CREATE DATABASE %v WITH DURATION %v REPLICATION 1 SHARD DURATION %v NAME %v", (*timeserData).timeSeriesDbName, duration, duration, retentionPolicyName), "", "")
 
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully created DB %v with retention policy %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName)
+		log.Info().Msgf("Sucessfully created DB %v with retention policy %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName)
 	} else {
-		fmt.Printf("Failed to create DB %v with retention policy %v with error %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName, err)
+		log.Error().Msgf("Failed to create DB %v with retention policy %v with error %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName, err)
 	}
 	return err
 }
@@ -118,9 +121,9 @@ func (timeserData *TimeSeriesClientData) DeleteTimeSeriesDB() (err error) {
 	q := timesrclient.NewQuery(fmt.Sprintf("DROP DATABASE %v", (*timeserData).timeSeriesDbName), "", "")
 
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully deleted DB %v\n", (*timeserData).timeSeriesDbName)
+		log.Info().Msgf("Sucessfully deleted DB %v\n", (*timeserData).timeSeriesDbName)
 	} else {
-		fmt.Printf("Failed to delete DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
+		log.Error().Msgf("Failed to delete DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
 	}
 	return err
 }
@@ -130,9 +133,9 @@ func (timeserData *TimeSeriesClientData) DropMeasurement(measurement string) (er
 	q := timesrclient.NewQuery(fmt.Sprintf("DELETE FROM %v", measurement), (*timeserData).timeSeriesDbName, "")
 
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully deleted measurement %v\n", measurement)
+		log.Info().Msgf("Sucessfully deleted measurement %v\n", measurement)
 	} else {
-		fmt.Printf("Failed to delete measurement %v with error %v\n", measurement, err)
+		log.Error().Msgf("Failed to delete measurement %v with error %v\n", measurement, err)
 	}
 	return err
 }
@@ -159,7 +162,7 @@ func (timeserData *TimeSeriesClientData) Set(measurement, key string, value []by
 	bp.AddPoint(pt)
 	// Write the batch
 	timeserData.Iclient.Write(bp)
-	fmt.Printf("TimeSeriesDB Set: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, value, err)
+	log.Debug().Msgf("TimeSeriesDB Set: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, value, err)
 	return err
 }
 
@@ -177,7 +180,7 @@ func (timeserData *TimeSeriesClientData) Get(measurement, key string) (result in
 			}
 		}
 	}
-	fmt.Printf("TimeSeriesDB Get: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, result, err)
+	log.Debug().Msgf("TimeSeriesDB Get: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, result, err)
 	return result, err
 }
 
@@ -185,7 +188,7 @@ func (timeserData *TimeSeriesClientData) Get(measurement, key string) (result in
 func (timeserData *TimeSeriesClientData) Query(queryStr string) (resp *timesrclient.Response, err error) {
 	q := timesrclient.NewQuery(queryStr, timeserData.timeSeriesDbName, "")
 	response, err := timeserData.Iclient.Query(q)
-	fmt.Printf("TimeSeriesDB Query: DB=%v, QueryString=%v, Result=%v, err=%v\n", timeserData.timeSeriesDbName, queryStr, response, err)
+	log.Debug().Msgf("TimeSeriesDB Query: DB=%v, QueryString=%v, Result=%v, err=%v\n", timeserData.timeSeriesDbName, queryStr, response, err)
 	return response, err
 }
 
@@ -206,7 +209,7 @@ func (timeserData *TimeSeriesClientData) WritePoint(measurement string, tags map
 	bp.AddPoint(pt)
 	// Write the batch
 	timeserData.Iclient.Write(bp)
-	fmt.Printf("\nTimeSeriesDB WritePoint: DB=%v Measurement=%v tags=%v, fields=%v, err=%v", timeserData.timeSeriesDbName, measurement, tags, fields, err)
+	log.Debug().Msgf("\nTimeSeriesDB WritePoint: DB=%v Measurement=%v tags=%v, fields=%v, err=%v", timeserData.timeSeriesDbName, measurement, tags, fields, err)
 	return err
 }
 
@@ -235,10 +238,10 @@ func (timeserData *TimeSeriesClientData) InsertUnmarshalledJsonRows(measurement 
 	for _, data := range rows {
 		flatjson, err := timeserData.Flatten(data, "", ignoreKeyList)
 		if err != nil {
-			fmt.Printf("\n Not able to flatten json %s for:%v", err.Error(), data)
+			log.Warn().Msgf("\n Not able to flatten json %s for:%v", err.Error(), data)
 		}
 
-		fmt.Printf("\n Data after flattening: %v", flatjson)
+		log.Info().Msgf("\n Data after flattening: %v", flatjson)
 
 		for key, value := range flatjson {
 			if value != nil {
@@ -256,7 +259,7 @@ func (timeserData *TimeSeriesClientData) InsertUnmarshalledJsonRows(measurement 
 		// Create a point and add to batch
 		pt, err := timesrclient.NewPoint(measurement, tags, field, time.Now())
 		if err != nil {
-			fmt.Println("Error: ", err.Error())
+			log.Error().Msgf("Error: %s", err.Error())
 			return err
 		}
 		bp.AddPoint(pt)
@@ -301,7 +304,7 @@ func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreLi
 
 	err = json.Unmarshal(jsonBuffer, &data)
 	if err != nil {
-		fmt.Printf("\n Not able to Parse data %s", err.Error())
+		log.Error().Msgf("\n Not able to Parse data %s", err.Error())
 		return err
 	}
 
@@ -312,11 +315,11 @@ func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreLi
 
 	flatjson, err := timeserData.Flatten(data, "", ignoreList)
 	if err != nil {
-		fmt.Printf("\n Not able to flatten json %s for:%v", err.Error(), data)
+		log.Error().Msgf("\n Not able to flatten json %s for:%v", err.Error(), data)
 		return err
 	}
 
-	fmt.Printf("\n Data after flattening: %v", flatjson)
+	log.Info().Msgf("\n Data after flattening: %v", flatjson)
 
 	for key, value := range flatjson {
 		if value != nil {
@@ -334,7 +337,7 @@ func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreLi
 	// Create a point and add to batch
 	pt, err := timesrclient.NewPoint(measurement, tags, field, time.Now())
 	if err != nil {
-		fmt.Println("Error: ", err.Error())
+		log.Error().Msgf("Error: %s", err.Error())
 		return err
 	}
 	bp.AddPoint(pt)
@@ -351,9 +354,9 @@ func (timeserData *TimeSeriesClientData) CreateRetentionPolicy(retentionPolicyNa
 	}
 	q := timesrclient.NewQuery(fmt.Sprintf("CREATE RETENTION POLICY %v ON %v DURATION %v REPLICATION 1 SHARD DURATION %v %v", retentionPolicyName, (*timeserData).timeSeriesDbName, duration, duration, isDefault), (*timeserData).timeSeriesDbName, "")
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully created retention policy %v\n", retentionPolicyName)
+		log.Info().Msgf("Sucessfully created retention policy %v\n", retentionPolicyName)
 	} else {
-		fmt.Printf("Failed to create retention policy %v with error %v\n", retentionPolicyName, err)
+		log.Error().Msgf("Failed to create retention policy %v with error %v\n", retentionPolicyName, err)
 	}
 	return err
 }
@@ -366,9 +369,9 @@ func (timeserData *TimeSeriesClientData) UpdateRetentionPolicy(retentionPolicyNa
 	}
 	q := timesrclient.NewQuery(fmt.Sprintf("ALTER RETENTION POLICY %v ON %v DURATION %v SHARD DURATION %v %v", retentionPolicyName, (*timeserData).timeSeriesDbName, duration, duration, isDefault), (*timeserData).timeSeriesDbName, "")
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully updatated retention policy %v\n", retentionPolicyName)
+		log.Info().Msgf("Sucessfully updatated retention policy %v\n", retentionPolicyName)
 	} else {
-		fmt.Printf("Failed to updatate retention policy %v with error %v\n", retentionPolicyName, err)
+		log.Error().Msgf("Failed to updatate retention policy %v with error %v\n", retentionPolicyName, err)
 	}
 	return err
 }
@@ -378,9 +381,9 @@ func (timeserData *TimeSeriesClientData) DeleteRetentionPolicy(retentionPolicyNa
 	q := timesrclient.NewQuery(fmt.Sprintf("DROP RETENTION POLICY %v ON %v", retentionPolicyName, (*timeserData).timeSeriesDbName), (*timeserData).timeSeriesDbName, "")
 
 	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		fmt.Printf("Sucessfully deleted retention policy %v\n", retentionPolicyName)
+		log.Info().Msgf("Sucessfully deleted retention policy %v\n", retentionPolicyName)
 	} else {
-		fmt.Printf("Failed to delete retention policy %v with error %v\n", retentionPolicyName, err)
+		log.Error().Msgf("Failed to delete retention policy %v with error %v\n", retentionPolicyName, err)
 	}
 	return err
 }
@@ -397,7 +400,7 @@ func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, pref
 			case map[string]interface{}, []interface{}:
 				v, err := json.Marshal(&v)
 				if err != nil {
-					fmt.Printf("\n Not able to Marshal data for key:%s=%v", newKey, v)
+					log.Error().Msgf("\n Not able to Marshal data for key:%s=%v", newKey, v)
 					return err
 				}
 				flatMap[newKey] = string(v)
@@ -409,7 +412,7 @@ func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, pref
 			switch v.(type) {
 			case map[string]interface{}, []interface{}:
 				if err := _flatten(false, flatMap, v, newKey, ignorelist); err != nil {
-					fmt.Printf("\n Not able to flatten data for key:%s=%v", newKey, v)
+					log.Error().Msgf("\n Not able to flatten data for key:%s=%v", newKey, v)
 					return err
 				}
 			default:
@@ -510,4 +513,18 @@ func _matchkey(ignorelist []string, value string) bool {
 	}
 
 	return false
+}
+
+func SetLoggingLevel(level string) {
+
+	switch level {
+	case "debug":
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case "info":
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case "error":
+		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	case "warn":
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	}
 }
