@@ -1,0 +1,9 @@
+Verified+1: ORAN Jobbuilder <releng+oran-jobbuilder@linuxfoundation.org>
+Code-Review+1: Timo Tietavainen <timo.tietavainen@nokia.com>
+Code-Review+2: Mohammad Arif Belgaumkar <mabelgaumkar@parallelwireless.com>
+Code-Review+2: Thoralf Czichy <thoralf.czichy@nokia.com>
+Submitted-by: Thoralf Czichy <thoralf.czichy@nokia.com>
+Submitted-at: Mon, 09 May 2022 08:22:24 +0000
+Reviewed-on: https://gerrit.o-ran-sc.org/r/c/ric-plt/stslgo/+/8183
+Project: ric-plt/stslgo
+Branch: refs/heads/master
