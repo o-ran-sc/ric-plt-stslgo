@@ -1,5 +1,6 @@
 //
 // Copyright 2022 Parallel Wireless
+// Copyright 2022 Samsung Electronics Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,223 +21,336 @@
 package stslgo
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
+
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/domain"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	_ "github.com/influxdata/influxdb1-client"
-	timesrclient "github.com/influxdata/influxdb1-client/v2"
 )
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                      Datastructures for storing all the timeseries db specific information
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-type TimeSeriesDataGoClient interface {
-	Close() error
-	Query(timesrclient.Query) (*timesrclient.Response, error)
-	Write(bp timesrclient.BatchPoints) error
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Datastructures for storing all the timeseries db specific information
+//
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+type TimeSeriesClientData struct {
+	iClient           influxdb2.Client // Connection to TimeSeriesDB
+	timeSeriesOrgName string           // The organization including TimeSeriesDB
+	timeSeriesDB      TimeSeriesDB     // TimeSeriesDB to be used for this XAPP
 }
 
-type TimeSeriesClientData struct {
-	Iclient            TimeSeriesDataGoClient // Connection to TimeSeriesDB
-	timeSeriesDbName   string                 // TimeSeries DB to be used for this XAPP
-	timeSeriesUserName string                 // Username for accessing the TimeSeries DB
-	timeSeriesPassword string                 // Password for accessing the TimeSeries DB
+type TimeSeriesDB struct {
+	Name            string
+	RetentionPolicy string
+	CreatedTime     time.Time
 }
 
 type JsonRow map[string]interface{}
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     Constructor for TimeSeriesClientData
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-func NewTimeSeriesClientData(dbName, userName, passWord string) *TimeSeriesClientData {
+const (
+	TIMESERIESDB_DEFAULT_SERVICE_ORG_NAME = "influxdata"
+	TIMESERIESDB_DEFAULT_DB_NAME          = "default"
+	TIMESERIESDB_DEFAULT_RETENTION_POLICY = ""
+	TIMESERIESDB_DEFAULT_SERVICE_HOST     = "http://127.0.0.1:8086"
+)
+
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Constructor for TimeSeriesClientData
+//
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+func NewTimeSeriesClientData(dbName string) *TimeSeriesClientData {
 	zerolog.SetGlobalLevel(zerolog.InfoLevel) //default logging, can be changed using SetLoggingLevel()
-	return &TimeSeriesClientData{
-		timeSeriesDbName:   dbName,
-		timeSeriesUserName: userName,
-		timeSeriesPassword: passWord,
+	if dbName == "" {
+		dbName = TIMESERIESDB_DEFAULT_DB_NAME
 	}
+
+	orgName := os.Getenv("TIMESERIESDB_SERVICE_ORG_NAME")
+	if orgName == "" {
+		orgName = TIMESERIESDB_DEFAULT_SERVICE_ORG_NAME
+	}
+
+	timeserData := &TimeSeriesClientData{
+		timeSeriesOrgName: orgName,
+		timeSeriesDB: TimeSeriesDB{
+			Name:            dbName,
+			RetentionPolicy: TIMESERIESDB_DEFAULT_RETENTION_POLICY,
+		},
+	}
+
+	log.Info().Msgf("TimeSeriesDB Client created successfully: %+v\n", timeserData)
+	return timeserData
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     Methods for TimeSeriesClientData
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-func (timeserData *TimeSeriesClientData) CreateTimeSeriesConnection() (err error) {
-	// TimeSeriesDB specific intialization
-	hostname := os.Getenv("TIMESERIESDB_SERVICE_HOST")
-	if hostname == "" {
-		hostname = "localhost"
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Methods for TimeSeriesClientData
+//
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+func (tscd *TimeSeriesClientData) CreateTimeSeriesConnection() (err error) {
+	host := os.Getenv("TIMESERIESDB_SERVICE_HOST")
+	if host == "" {
+		host = TIMESERIESDB_DEFAULT_SERVICE_HOST
 	}
-	port := os.Getenv("TIMESERIESDB_SERVICE_PORT_HTTP")
-	if port == "" {
-		port = "8086"
+	token := os.Getenv("TIMESERIESDB_SERVICE_TOKEN")
+
+	log.Info().Msgf("Establishing connection with TimeSeriesDB host: %v\n", host)
+	(*tscd).iClient = influxdb2.NewClient(host, token)
+	defer tscd.iClient.Close()
+
+	health, err := (*tscd).iClient.Health(context.Background())
+
+	if err != nil || health.Status != domain.HealthCheckStatusPass {
+		log.Error().Msgf("Error checking TimeSeriesDB Client health: %+v\n", err.Error())
+		return
 	}
-	log.Info().Msgf("Establishing connection with TimeSeriesDB hostname: %v, port: %v\n", hostname, port)
-	(*timeserData).Iclient, err = timesrclient.NewHTTPClient(timesrclient.HTTPConfig{
-		Addr:     fmt.Sprintf("http://%v:%v", hostname, port),
-		Username: (*timeserData).timeSeriesUserName,
-		Password: (*timeserData).timeSeriesPassword,
-	})
+
+	log.Info().Msgf("TimeSeriesDB Client connected successfully: %+v\n", (*tscd).iClient)
+	return
+}
+
+// Creates a new database
+func (tscd *TimeSeriesClientData) CreateTimeSeriesDB() (err error) {
+	// Empty retention policy makes the database with 0s duration, which means infinite retention
+	return tscd.CreateTimeSeriesDBWithRetentionPolicy("")
+}
+
+func (tscd *TimeSeriesClientData) CreateTimeSeriesDBWithRetentionPolicy(retentionPolicy string) (err error) {
+	orgName := (*tscd).timeSeriesOrgName
+	bucketName := (*tscd).timeSeriesDB.Name
+	bucketsAPI := (*tscd).iClient.BucketsAPI()
+
+	orgAPI := tscd.iClient.OrganizationsAPI()
+	org, err := orgAPI.FindOrganizationByName(context.Background(), orgName)
 	if err != nil {
-		log.Error().Msgf("Error creating TimeSeriesDB Client: %v\n", err.Error())
-	} else {
-		log.Info().Msgf("TimeSeriesDB Client created successfully: %v\n", (*timeserData).Iclient)
-		defer timeserData.Iclient.Close()
+		log.Error().Msgf("Failed to find organization %v with error: %v\n", orgName, err)
+		return
 	}
-	return err
-}
 
-// Creates a new database
-func (timeserData *TimeSeriesClientData) CreateTimeSeriesDB() (err error) {
-	q := timesrclient.NewQuery(fmt.Sprintf("CREATE DATABASE %v", (*timeserData).timeSeriesDbName), "", "")
+	bucket, err := bucketsAPI.FindBucketByName(context.Background(), bucketName)
+	if bucket != nil {
+		log.Debug().Msgf("TimeSeriesDB with name %v already exists", bucketName)
 
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully created DB %v\n", (*timeserData).timeSeriesDbName)
-	} else {
-		log.Error().Msgf("Failed to create DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
+		tscd.timeSeriesDB.RetentionPolicy = rpInt64ToString(bucket.RetentionRules[0].EverySeconds)
+		tscd.timeSeriesDB.CreatedTime = *bucket.CreatedAt
+		return
 	}
-	return err
-}
 
-// Creates a new database
-func (timeserData *TimeSeriesClientData) CreateTimeSeriesDBWithRetentionPolicy(retentionPolicyName, duration string) (err error) {
-	q := timesrclient.NewQuery(fmt.Sprintf("CREATE DATABASE %v WITH DURATION %v REPLICATION 1 SHARD DURATION %v NAME %v", (*timeserData).timeSeriesDbName, duration, duration, retentionPolicyName), "", "")
-
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully created DB %v with retention policy %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName)
-	} else {
-		log.Error().Msgf("Failed to create DB %v with retention policy %v with error %v\n", (*timeserData).timeSeriesDbName, retentionPolicyName, err)
+	duration, err := rpStringToInt64(retentionPolicy)
+	if err != nil {
+		log.Error().Msgf("Failed to convert retention policy %v to duration with error: %v\n", retentionPolicy, err)
+		return
 	}
-	return err
+
+	bucket, err = bucketsAPI.CreateBucketWithName(context.Background(), org, bucketName, domain.RetentionRule{
+		EverySeconds: duration,
+	})
+
+	if err != nil {
+		log.Error().Msgf("Failed to create TimeSeriesDB %v with error: %v\n", bucketName, err)
+	}
+
+	tscd.timeSeriesDB.RetentionPolicy = retentionPolicy
+	tscd.timeSeriesDB.CreatedTime = *bucket.CreatedAt
+	log.Info().Msgf("Sucessfully created TimeSeriesDB with name %v, at %v\n", bucketName, tscd.timeSeriesDB.CreatedTime)
+	return
 }
 
 // Deletes a database
-func (timeserData *TimeSeriesClientData) DeleteTimeSeriesDB() (err error) {
-	q := timesrclient.NewQuery(fmt.Sprintf("DROP DATABASE %v", (*timeserData).timeSeriesDbName), "", "")
-
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully deleted DB %v\n", (*timeserData).timeSeriesDbName)
-	} else {
-		log.Error().Msgf("Failed to delete DB %v with error %v\n", (*timeserData).timeSeriesDbName, err)
+func (tscd *TimeSeriesClientData) DeleteTimeSeriesDB() (err error) {
+	bucketName := (*tscd).timeSeriesDB.Name
+	bucketsAPI := (*tscd).iClient.BucketsAPI()
+	bucket, err := bucketsAPI.FindBucketByName(context.Background(), bucketName)
+	if bucket == nil {
+		log.Error().Msgf("Failed to find TimeSeriesDB with name %v", bucketName)
+		return
 	}
-	return err
+
+	err = bucketsAPI.DeleteBucket(context.Background(), bucket)
+	if err != nil {
+		log.Error().Msgf("Failed to delete TimeSeriesDB with name %v", bucketName)
+		return
+	}
+
+	tscd.timeSeriesDB.Name = ""
+	tscd.timeSeriesDB.RetentionPolicy = ""
+	log.Info().Msgf("Sucessfully deleted TimeSeriesDB with name %v\n", bucketName)
+	return
+}
+
+// Updates the database's retention policy
+func (tscd *TimeSeriesClientData) UpdateTimeSeriesDBRetentionPolicy(newRetentionPolicy string) (err error) {
+	bucketName := (*tscd).timeSeriesDB.Name
+	bucketsAPI := (*tscd).iClient.BucketsAPI()
+	bucket, err := bucketsAPI.FindBucketByName(context.Background(), bucketName)
+	if bucket == nil {
+		log.Error().Msgf("Failed to find TimeSeriesDB with name %v", bucketName)
+		return
+	}
+
+	duration, err := rpStringToInt64(newRetentionPolicy)
+	if err != nil {
+		log.Error().Msgf("Failed to convert retention policy %v to duration with error: %v\n", newRetentionPolicy, err)
+		return
+	}
+
+	bucket.RetentionRules[0].EverySeconds = duration
+
+	// default shard group duration value
+	var shardGroupDuration string
+	if _60d, _ := rpStringToInt64("60d"); duration > _60d || duration == 0 {
+		shardGroupDuration = "1w"
+	} else if _2d, _ := rpStringToInt64("2d"); duration > _2d {
+		shardGroupDuration = "1d"
+	} else {
+		shardGroupDuration = "1h"
+	}
+
+	shardGroupDurationSeconds, _ := rpStringToInt64(shardGroupDuration)
+	bucket.RetentionRules[0].ShardGroupDurationSeconds = &shardGroupDurationSeconds
+	_, err = bucketsAPI.UpdateBucket(context.Background(), bucket)
+	if err != nil {
+		log.Error().Msgf("Failed to updated TimeSeriesDB with name %v", bucketName)
+		return
+	}
+
+	tscd.timeSeriesDB.RetentionPolicy = newRetentionPolicy
+	log.Info().Msgf("Sucessfully updated TimeSeriesDB with name %v's retention policy to %vsec\n", bucketName, duration)
+	return
 }
 
 // Deletes a table
-func (timeserData *TimeSeriesClientData) DropMeasurement(measurement string) (err error) {
-	q := timesrclient.NewQuery(fmt.Sprintf("DELETE FROM %v", measurement), (*timeserData).timeSeriesDbName, "")
+func (tscd *TimeSeriesClientData) DropMeasurement(measurement string) (err error) {
+	orgName := (*tscd).timeSeriesOrgName
+	bucketName := (*tscd).timeSeriesDB.Name
 
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully deleted measurement %v\n", measurement)
-	} else {
-		log.Error().Msgf("Failed to delete measurement %v with error %v\n", measurement, err)
+	ctx := context.Background()
+	startTime := tscd.timeSeriesDB.CreatedTime
+	stopTime := time.Now()
+	predicate := fmt.Sprintf("_measurement=%s", measurement)
+	deleteAPI := (*tscd).iClient.DeleteAPI()
+
+	err = deleteAPI.DeleteWithName(ctx, orgName, bucketName, startTime, stopTime, predicate)
+	if err != nil {
+		log.Error().Msgf("Failed to drop TimeSeriesDB's measurement with name %v", measurement)
 	}
-	return err
+
+	log.Info().Msgf("Sucessfully drop %v's measurement with name %v\n", bucketName, measurement)
+	return
 }
 
-// Set operation to mimic traditional key-value pair setting.
-// PS - This creates new row than updating existing one to demonstrate time series capability
-func (timeserData *TimeSeriesClientData) Set(measurement, key string, value []byte) (err error) {
-	// Create a new point batch
-	bp, _ := timesrclient.NewBatchPoints(timesrclient.BatchPointsConfig{
-		Database:  (*timeserData).timeSeriesDbName,
-		Precision: "ns",
-	})
-
-	// Create a point and add to batch
+// // Set operation to mimic traditional key-value pair setting.
+// // PS - This creates new row than updating existing one to demonstrate time series capability
+func (tscd *TimeSeriesClientData) Set(measurement, key string, value interface{}) (err error) {
 	tags := map[string]string{}
 	fields := map[string]interface{}{
 		key: value,
 	}
-	pt, err := timesrclient.NewPoint(measurement, tags, fields, time.Now())
-	if err != nil {
-		fmt.Println("Error: ", err.Error())
-		return err
-	}
-	bp.AddPoint(pt)
-	// Write the batch
-	timeserData.Iclient.Write(bp)
-	log.Debug().Msgf("TimeSeriesDB Set: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, value, err)
-	return err
+	return tscd.WritePoint(measurement, tags, fields)
 }
 
 // Get operation to mimic traditional key-value pair get operation
-func (timeserData *TimeSeriesClientData) Get(measurement, key string) (result interface{}, err error) {
-	queryStr := fmt.Sprintf("SELECT %v FROM %v ORDER BY time DESC LIMIT 1", key, measurement)
-	q := timesrclient.NewQuery(queryStr, timeserData.timeSeriesDbName, "")
-	if response, err := timeserData.Iclient.Query(q); err == nil && response.Error() == nil {
-		for _, v := range response.Results {
-			for _, row := range v.Series {
-				for _, value := range row.Values {
-					fmt.Printf("Row: %v, Value: %v\n", row, value)
-					result = value[1] // value[0] is time
-				}
-			}
+func (tscd *TimeSeriesClientData) Get(measurement, key string) (result interface{}, err error) {
+	bucketName := tscd.timeSeriesDB.Name
+	// Get query all data since DB created.
+	startRange := time.Since(tscd.timeSeriesDB.CreatedTime).Truncate(time.Second) + (5 * time.Second)
+
+	fluxQueryStr := fmt.Sprintf(`
+	from(bucket: "%s")
+    |> range(start: -%s)
+    |> filter(fn: (r) => r._measurement == "%s" and r._field == "%s")
+	|> last()
+	`, bucketName, startRange, measurement, key)
+
+	resp, err := tscd.Query(fluxQueryStr)
+	if err == nil {
+		for resp.Next() {
+			result = resp.Record().Value()
+			log.Debug().Msgf("value: %v\n", result)
 		}
+		if resp.Err() != nil {
+			log.Error().Msgf("query parsing error: %s\n", resp.Err().Error())
+		}
+	} else {
+		log.Error().Msgf("Unable to query data with error %v\n", err)
 	}
-	log.Debug().Msgf("TimeSeriesDB Get: DB=%v Measurement=%v key=%v, value=%v err=%v\n", timeserData.timeSeriesDbName, measurement, key, result, err)
-	return result, err
+	return result, nil
 }
 
-// Generic query operation
-func (timeserData *TimeSeriesClientData) Query(queryStr string) (resp *timesrclient.Response, err error) {
-	q := timesrclient.NewQuery(queryStr, timeserData.timeSeriesDbName, "")
-	response, err := timeserData.Iclient.Query(q)
-	log.Debug().Msgf("TimeSeriesDB Query: DB=%v, QueryString=%v, Result=%v, err=%v\n", timeserData.timeSeriesDbName, queryStr, response, err)
-	return response, err
+// Generic query operation wtih flux
+func (tscd *TimeSeriesClientData) Query(fluxQueryStr string) (resp *api.QueryTableResult, err error) {
+	orgName := (*tscd).timeSeriesOrgName
+
+	queryAPI := (*tscd).iClient.QueryAPI(orgName)
+	if queryAPI == nil {
+		log.Error().Msgf("Failed to get queryAPI")
+		return nil, errors.New("cannot get writeAPI")
+	}
+
+	resp, err = queryAPI.Query(context.Background(), fluxQueryStr)
+	log.Info().Msgf("TimeSeriesDB Query: DB=%v, QueryString=%s, Result=%v, err=%v\n", tscd.timeSeriesDB.Name, fluxQueryStr, resp, err)
+	return
 }
 
-// Generic write point operation
-func (timeserData *TimeSeriesClientData) WritePoint(measurement string, tags map[string]string, fields map[string]interface{}) (err error) {
-	// Create a new point batch
-	bp, _ := timesrclient.NewBatchPoints(timesrclient.BatchPointsConfig{
-		Database:  (*timeserData).timeSeriesDbName,
-		Precision: "ns",
-	})
-
-	// Create a point and add to batch
-	pt, err := timesrclient.NewPoint(measurement, tags, fields, time.Now())
-	if err != nil {
-		fmt.Println("Error: ", err.Error())
-		return err
+// Generic write point operation. In influxDBv2, batch writing is implemented inside of writeAPI.WritePoint()
+func (tscd *TimeSeriesClientData) WritePoint(measurement string, tags map[string]string, fields map[string]interface{}) (err error) {
+	orgName := (*tscd).timeSeriesOrgName
+	bucketName := (*tscd).timeSeriesDB.Name
+	writeAPI := (*tscd).iClient.WriteAPI(orgName, bucketName)
+	if writeAPI == nil {
+		log.Error().Msgf("Failed to get writeAPI")
+		return errors.New("cannot get writeAPI")
 	}
-	bp.AddPoint(pt)
-	// Write the batch
-	timeserData.Iclient.Write(bp)
-	log.Debug().Msgf("\nTimeSeriesDB WritePoint: DB=%v Measurement=%v tags=%v, fields=%v, err=%v", timeserData.timeSeriesDbName, measurement, tags, fields, err)
-	return err
+
+	defer writeAPI.Flush()
+
+	errorsCh := writeAPI.Errors()
+	go func() {
+		for err := range errorsCh {
+			log.Error().Msgf("Failed to write with error: %v", err)
+		}
+	}()
+
+	point := influxdb2.NewPoint(measurement,
+		tags,
+		fields,
+		time.Now())
+	writeAPI.WritePoint(point)
+	log.Debug().Msgf("\nTimeSeriesDB WritePoint: DB=%v Measurement=%v tags=%v, fields=%v, err=%v", tscd.timeSeriesDB.Name, measurement, tags, fields, err)
+
+	return nil
 }
 
 // Function to flatten nested json
-func (timeserData *TimeSeriesClientData) Flatten(nested map[string]interface{}, prefix string, IgnoreKeyList []string) (map[string]interface{}, error) {
-	flatmap := make(map[string]interface{})
+func (tscd *TimeSeriesClientData) Flatten(nested map[string]interface{}, prefix string, IgnoreKeyList []string) (flatmap map[string]interface{}, err error) {
+	flatmap = make(map[string]interface{})
 
-	err := _flatten(true, flatmap, nested, prefix, IgnoreKeyList)
+	err = _flatten(true, flatmap, nested, prefix, IgnoreKeyList)
 	if err != nil {
-		return nil, err
+		return
 	}
 
-	return flatmap, nil
+	return
 }
 
-// Insert 1 or more Json Rows as a single batch
-func (timeserData *TimeSeriesClientData) InsertUnmarshalledJsonRows(measurement string, rows []JsonRow, ignoreKeyList []string) (err error) {
+// Insert 1 or more Json Rows
+func (tscd *TimeSeriesClientData) InsertUnmarshalledJsonRows(measurement string, rows []JsonRow, ignoreKeyList []string) (err error) {
 	tags := make(map[string]string)
-	field := make(map[string]interface{})
-
-	bp, err := timesrclient.NewBatchPoints(timesrclient.BatchPointsConfig{
-		Database:  (*timeserData).timeSeriesDbName,
-		Precision: "ns",
-	})
+	fields := make(map[string]interface{})
 
 	for _, data := range rows {
-		flatjson, err := timeserData.Flatten(data, "", ignoreKeyList)
+		flatjson, err := tscd.Flatten(data, "", ignoreKeyList)
 		if err != nil {
 			log.Warn().Msgf("\n Not able to flatten json %s for:%v", err.Error(), data)
 		}
@@ -246,60 +360,53 @@ func (timeserData *TimeSeriesClientData) InsertUnmarshalledJsonRows(measurement 
 		for key, value := range flatjson {
 			if value != nil {
 				if reflect.ValueOf(value).Type().Kind() == reflect.Float64 {
-					field[key] = value
+					fields[key] = value
 				} else if reflect.ValueOf(value).Type().Kind() == reflect.String {
-					field[key] = value
+					fields[key] = value
 				} else if reflect.ValueOf(value).Type().Kind() == reflect.Bool {
-					field[key] = value
+					fields[key] = value
 				} else if reflect.ValueOf(value).Type().Kind() == reflect.Int {
-					field[key] = value
+					fields[key] = value
 				}
 			}
 		}
-		// Create a point and add to batch
-		pt, err := timesrclient.NewPoint(measurement, tags, field, time.Now())
+		err = tscd.WritePoint(measurement, tags, fields)
 		if err != nil {
-			log.Error().Msgf("Error: %s", err.Error())
-			return err
+			log.Error().Msgf("Failed to InsertUnmarshalledJsonRows cause error : %v", err)
 		}
-		bp.AddPoint(pt)
 	}
-	// Write the batch
-	err = timeserData.Iclient.Write(bp)
-	return err
+	return
 }
 
 // Function to flatten array of nested json
-func (timeserData *TimeSeriesClientData) UnmarshallJsonRows(jsonBuffer []byte) ([]JsonRow, error) {
+func (tscd *TimeSeriesClientData) UnmarshallJsonRows(jsonBuffer []byte) (jsonrow []JsonRow, err error) {
 
 	// We create an empty array
-	jsonrow := []JsonRow{}
+	jsonrow = []JsonRow{}
 
 	// Unmarshal the json into it. this will use the struct tag
-	err := json.Unmarshal(jsonBuffer, &jsonrow)
-	if err != nil {
-		return nil, err
-	}
+	err = json.Unmarshal(jsonBuffer, &jsonrow)
+
 	// the array is now filled with each row of json as an array index
-	return jsonrow, nil
+	return
 }
 
 // Inserts JSON rows as separate time points in the mentioned measurement
-func (timeserData *TimeSeriesClientData) InsertJsonArray(measurement string, ignoreList []string, jsonBuffer []byte) (err error) {
-	rows, err := timeserData.UnmarshallJsonRows(jsonBuffer)
+func (tscd *TimeSeriesClientData) InsertJsonArray(measurement string, ignoreList []string, jsonBuffer []byte) (err error) {
+	rows, err := tscd.UnmarshallJsonRows(jsonBuffer)
 	if err == nil && len(rows) > 0 {
 		// We can call InsertUnmarshalledJsonRow but it will do write for each row
 		// Instead, use batching if rows more than 1
-		err = timeserData.InsertUnmarshalledJsonRows(measurement, rows, ignoreList)
+		err = tscd.InsertUnmarshalledJsonRows(measurement, rows, ignoreList)
 	}
 	return err
 }
 
 // Inserts json data as single row in the mentioned meausrement
 // PS - Use only for single row data
-func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreList []string, jsonBuffer []byte) (err error) {
+func (tscd *TimeSeriesClientData) InsertJson(measurement string, ignoreList []string, jsonBuffer []byte) (err error) {
 	tags := make(map[string]string)
-	field := make(map[string]interface{})
+	fields := make(map[string]interface{})
 	data := make(map[string]interface{})
 
 	err = json.Unmarshal(jsonBuffer, &data)
@@ -308,12 +415,7 @@ func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreLi
 		return err
 	}
 
-	bp, err := timesrclient.NewBatchPoints(timesrclient.BatchPointsConfig{
-		Database:  (*timeserData).timeSeriesDbName,
-		Precision: "ns",
-	})
-
-	flatjson, err := timeserData.Flatten(data, "", ignoreList)
+	flatjson, err := tscd.Flatten(data, "", ignoreList)
 	if err != nil {
 		log.Error().Msgf("\n Not able to flatten json %s for:%v", err.Error(), data)
 		return err
@@ -324,73 +426,25 @@ func (timeserData *TimeSeriesClientData) InsertJson(measurement string, ignoreLi
 	for key, value := range flatjson {
 		if value != nil {
 			if reflect.ValueOf(value).Type().Kind() == reflect.Float64 {
-				field[key] = value
+				fields[key] = value
 			} else if reflect.ValueOf(value).Type().Kind() == reflect.String {
-				field[key] = value
+				fields[key] = value
 			} else if reflect.ValueOf(value).Type().Kind() == reflect.Bool {
-				field[key] = value
+				fields[key] = value
 			} else if reflect.ValueOf(value).Type().Kind() == reflect.Int {
-				field[key] = value
+				fields[key] = value
 			}
 		}
 	}
-	// Create a point and add to batch
-	pt, err := timesrclient.NewPoint(measurement, tags, field, time.Now())
-	if err != nil {
-		log.Error().Msgf("Error: %s", err.Error())
-		return err
-	}
-	bp.AddPoint(pt)
-	// Write the batch
-	err = timeserData.Iclient.Write(bp)
-	return err
+
+	return tscd.WritePoint(measurement, tags, fields)
 }
 
-// Creates a new retention policy
-func (timeserData *TimeSeriesClientData) CreateRetentionPolicy(retentionPolicyName, duration string, setDefault bool) (err error) {
-	isDefault := ""
-	if true == setDefault {
-		isDefault = "DEFAULT"
-	}
-	q := timesrclient.NewQuery(fmt.Sprintf("CREATE RETENTION POLICY %v ON %v DURATION %v REPLICATION 1 SHARD DURATION %v %v", retentionPolicyName, (*timeserData).timeSeriesDbName, duration, duration, isDefault), (*timeserData).timeSeriesDbName, "")
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully created retention policy %v\n", retentionPolicyName)
-	} else {
-		log.Error().Msgf("Failed to create retention policy %v with error %v\n", retentionPolicyName, err)
-	}
-	return err
-}
-
-// Updates an existing retention policy
-func (timeserData *TimeSeriesClientData) UpdateRetentionPolicy(retentionPolicyName, duration string, setDefault bool) (err error) {
-	isDefault := ""
-	if true == setDefault {
-		isDefault = "DEFAULT"
-	}
-	q := timesrclient.NewQuery(fmt.Sprintf("ALTER RETENTION POLICY %v ON %v DURATION %v SHARD DURATION %v %v", retentionPolicyName, (*timeserData).timeSeriesDbName, duration, duration, isDefault), (*timeserData).timeSeriesDbName, "")
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully updatated retention policy %v\n", retentionPolicyName)
-	} else {
-		log.Error().Msgf("Failed to updatate retention policy %v with error %v\n", retentionPolicyName, err)
-	}
-	return err
-}
-
-// Deletes an existing retention policy
-func (timeserData *TimeSeriesClientData) DeleteRetentionPolicy(retentionPolicyName string) (err error) {
-	q := timesrclient.NewQuery(fmt.Sprintf("DROP RETENTION POLICY %v ON %v", retentionPolicyName, (*timeserData).timeSeriesDbName), (*timeserData).timeSeriesDbName, "")
-
-	if response, err := (*timeserData).Iclient.Query(q); err == nil && response.Error() == nil {
-		log.Info().Msgf("Sucessfully deleted retention policy %v\n", retentionPolicyName)
-	} else {
-		log.Error().Msgf("Failed to delete retention policy %v with error %v\n", retentionPolicyName, err)
-	}
-	return err
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       Generic functions - Non methods
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Generic functions - Non methods
+//
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, prefix string, ignorelist []string) error {
 	var flag int
 
@@ -422,8 +476,8 @@ func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, pref
 		return nil
 	}
 
-	switch nested.(type) {
-	case map[string]interface{}:
+	switch reflect.TypeOf(nested).Kind() {
+	case reflect.Map:
 		for k, v := range nested.(map[string]interface{}) {
 
 			ok := _matchkey(ignorelist, k)
@@ -455,10 +509,10 @@ func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, pref
 				}
 			}
 		}
-	case []interface{}:
+	case reflect.Slice:
 		for i, v := range nested.([]interface{}) {
-			switch v.(type) {
-			case map[string]interface{}:
+			switch reflect.TypeOf(v).Kind() {
+			case reflect.Map:
 				for tag, value := range v.(map[string]interface{}) {
 					ok := _matchkey(ignorelist, tag)
 					if ok {
@@ -486,7 +540,7 @@ func _flatten(top bool, flatMap map[string]interface{}, nested interface{}, pref
 
 		}
 	default:
-		return errors.New("Not a valid input: map or slice")
+		return errors.New("not a valid input: map or slice")
 	}
 
 	return nil
@@ -527,4 +581,66 @@ func SetLoggingLevel(level string) {
 	case "warn":
 		zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	}
+}
+
+func rpInt64ToString(duration int64) string {
+	if duration == 0 {
+		return ""
+	}
+
+	type timeUnit struct {
+		unit  byte
+		asSec int64
+	}
+
+	wdhms := [5]timeUnit{
+		{'w', 7 * 24 * 60 * 60},
+		{'d', 24 * 60 * 60},
+		{'h', 60 * 60},
+		{'m', 60},
+		{'s', 1},
+	}
+
+	var buf strings.Builder
+
+	for _, tu := range wdhms {
+		p := duration / tu.asSec
+		duration = duration % tu.asSec
+		if p != 0 {
+			buf.WriteString(strconv.FormatInt(p, 10))
+			buf.WriteByte(tu.unit)
+		}
+	}
+
+	return buf.String()
+}
+
+func rpStringToInt64(retentionPolicy string) (duration int64, err error) {
+	if retentionPolicy == "" {
+		return 0, nil
+	}
+	var buf strings.Builder
+	for _, c := range retentionPolicy {
+		if c < '0' || c > '9' {
+			val, _ := strconv.ParseInt(buf.String(), 10, 64)
+			switch c {
+			case 'w':
+				duration += val * 7 * 24 * 60 * 60
+			case 'd':
+				duration += val * 24 * 60 * 60
+			case 'h':
+				duration += val * 60 * 60
+			case 'm':
+				duration += val * 60
+			case 's':
+				duration += val
+			default:
+				return 0, errors.New("unit of retention policy time duration supports only 'w', 'd', 'h', 'm', 's'")
+			}
+			buf.Reset()
+		} else {
+			buf.WriteRune(c)
+		}
+	}
+	return
 }
