@@ -1,5 +1,6 @@
 #
 # Copyright 2022 Parallel Wireless
+# Copyright 2022 Samsung Electronics Co., Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,9 +19,24 @@
 # Not to be used for anything else.
 #
 
-FROM golang:1.12
+FROM golang:1.14-stretch as builder
 
-RUN mkdir -p $GOPATH/src/stslgo
-COPY . $GOPATH/src/stslgo
-RUN ls -altr $GOPATH/src/stslgo/ci
-RUN cd $GOPATH/src/stslgo && ci/ci_test.sh
+WORKDIR /stslgo
+COPY . .
+
+ENV GO111MODULE=on \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
+
+RUN go mod download 
+RUN go mod tidy
+
+FROM golang:1.14-stretch
+
+WORKDIR /root/
+
+COPY --from=builder /stslgo/ . 
+RUN chmod 777 ci/install_influx.sh && \
+    ci/install_influx.sh && \
+    ci/ci_test.sh
