@@ -1,35 +1,34 @@
-# Wrapper GO module to access the TimeSeriesDB (Currently Influx Db is used, but can be extended to other DBs in future). 
+# Wrapper GO module to access the TimeSeriesDB (Currently InfluxDBv2 is used, but can be extended to other DBs in future). 
 TimeSeriesDB means InfluxDb as of now for all purposes
-This GO module uses the well defined v1.x GO client library SDK provided by the TimeSeriesDB team.
+This GO module uses the well defined v2.x GO client library SDK provided by the TimeSeriesDB team.
 This provides APIs for mostly commonly used functionalities and makes accessing TimeSeriesDB easier. 
-But, if needed, XAPP or any other pod can even use the v1.x GO client library SDK directly too.
+But, if needed, XAPP or any other pod can even use the v2.x GO client library SDK directly too.
+
+## Upgrade Influx DB 
+As this stlsgo repository is upgraded to a wrapper for influxDBv2, users who use influxDBv1 must upgrade DB instance itself. Details for how to upgrade from InfluxDB 1.x to 2.2 is in [link](https://docs.influxdata.com/influxdb/v2.2/upgrade/v1-to-v2/)
 
 ## APIs
 | API                                     | Description                                                                                                                                                                            |
 |-----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|NewTimeSeriesClientData()                    | Constructor for type TimeSeriesClientData which is used to store connection to timeseriesDB, DB name, username and password.
+|NewTimeSeriesClientData()                    | Constructor for type TimeSeriesClientData which is used to store data: connection to timeseriesDB, and information of DB to be used.
 |
 |CreateTimeSeriesConnection()                 | Creates a connection to TimeSeriesDB.
 |
-|CreateTimeSeriesDB()                         | Creates the DB specified during the constructor of TimeSeriesClientData.
+|CreateTimeSeriesDB()                         | Creates the DB of name specified during the constructor of TimeSeriesClientData and set it default(infinite) retention policy.
 |
-|CreateTimeSeriesDBWithRetentionPolicy()      | Creates the DB specified during the constructor of TimeSeriesClientData along with the new retention policy set as default for this database.
+|CreateTimeSeriesDBWithRetentionPolicy()      | Creates the DB of name specified during the constructor of TimeSeriesClientData and set it custom retention policy.
 |
-|DeleteTimeSeriesDB()                         | Deletes the DB specified during the constructor of TimeSeriesClientData.
+|DeleteTimeSeriesDB()                         | Deletes the DB of name specified during the constructor of TimeSeriesClientData.
+|
+|UpdateTimeSeriesDBRetentionPolicy()          | Updates the DB of name specified during the constructor of TimeSeriesClientData with custom retention policy.
 |
 |DropMeasurement()                        | Deletes the measurement specified as an arguement.
-|
-|CreateRetentionPolicy()                  | Creates a retention policy for a database.
-|
-|UpdateRetentionPolicy()                  | Updates the retention policy of a database.
-|
-|DeleteRetentionPolicy()                  | Deletes the retention policy of a database.
 |
 |Set()                                    | Mimics the traditional set operation of key-value pair. Inserts key-value pair into fieldset of TimeSeriesDB.
 |
 |Get()                                    | Mimics the traditional get operation of key-value pair. Gets the latest by time value of given key.
 |
-|Query()                                  | Generic query API for querying the TimeSeriesDB. Return type is Response structure of TimeSeriesDB GO library.
+|Query()                                  | Generic query API for querying the TimeSeriesDB. Return type is QueryTableResult structure of TimeSeriesDB.api GO library. In influxDBv2, generic query should be used with flux.
 |
 |WritePoint()                             | Generic write API to write a set of tags & fields to mentioned measurement/table in TimeSeriesDB.
 |
@@ -46,110 +45,136 @@ package main
 
 import (
 	"stslgo"
-        "encoding/json"
-        "fmt"
+	"encoding/json"
+	"fmt"
 )
 
 // Test function to test basic get/set functions on TimeSeriesDB
 func TestTimeSeriesDbGetSet(timeserData *TimeSeriesClientData) {
-        // TimeSeriesDB specific intialization start
-        tableName := "SetGetTable"
-        val := "3"
-        newval, err := json.Marshal(&val)
-        err = timeserData.Set(tableName, "a", newval)
-        if err != nil {
-                fmt.Printf("Unable to set data with error %v", err)
-        }
+	// TimeSeriesDB specific intialization start
+	tableName := "SetGetTable"
+	val := "3"
+	newval, err := json.Marshal(&val)
+	err = timeserData.Set(tableName, "a", newval)
+	if err != nil {
+		fmt.Printf("Unable to set data with error %v", err)
+	}
 
-        val = "2"
-        newval, err = json.Marshal(&val)
-        err = timeserData.Set(tableName, "a", newval)
-        if err != nil {
-                fmt.Printf("Unable to set data with error %v", err)
-        }
-        result, err := timeserData.Get(tableName, "a")
-        if err != nil {
-                fmt.Printf("Unable to get data with error %v", err)
-                return
-        }
-        fmt.Printf("Result = %v, type = %T", result, result)
+	val = "2"
+	newval, err = json.Marshal(&val)
+	err = timeserData.Set(tableName, "a", newval)
+	if err != nil {
+		fmt.Printf("Unable to set data with error %v", err)
+	}
+	
+	result, err := timeserData.Get(tableName, "a")
+	if err != nil {
+		fmt.Printf("Unable to get data with error %v", err)
+		return
+	}
+	
+	fmt.Printf("Result = %v, type = %T", result, result)
 
-        switch mytype := result.(type) {
-                default:
-                        fmt.Printf("My type is %T and value %v", mytype, mytype)
-        }
-        if newbyte, ok := result.([]byte); ok {
-                var newresult string
-                json.Unmarshal(newbyte, &newresult)
-                fmt.Printf("New Result is = %v", newresult)
-        }
+	switch mytype := result.(type) {
+		default:
+			fmt.Printf("My type is %T and value %v", mytype, mytype)
+	}
+	
+	if newbyte, ok := result.([]byte); ok {
+		var newresult string
+		json.Unmarshal(newbyte, &newresult)
+		fmt.Printf("New Result is = %v", newresult)
+	}
 }
 
 // Test function for testing flattening and inserting of a json array as individual time points
 func TestTimeSeriesDbJsonArrayFlatten(timeserData *TimeSeriesClientData) {
-        // Array of two rows
-        neighborCells := []byte(`[{"CID": "310-680-200-555001", "Cell-RF": {"rsp": -90, "rsrq": -13, "rsSinr": -2.5}}, {"CID": "310-680-200-555003", "Cell-RF": {"rsp": -140, "rsrq": -17, "rsSinr": -6}}]`)
-        ignoreKeyList := []string{}
+	// Array of two rows
+	neighborCells := []byte(`[{"CID": "310-680-200-555001", "Cell-RF": {"rsp": -90, "rsrq": -13, "rsSinr": -2.5}}, {"CID": "310-680-200-555003", "Cell-RF": {"rsp": -140, "rsrq": -17, "rsSinr": -6}}]`)
+	ignoreKeyList := []string{}
 
-        err := timeserData.InsertJsonArray("FlattenJsonArrayTable", ignoreKeyList, neighborCells)
-        if err != nil {
-                fmt.Printf("\n Failed to flatten and insert the json array with error %s", err.Error())
-        }
+	err := timeserData.InsertJsonArray("FlattenJsonArrayTable", ignoreKeyList, neighborCells)
+	if err != nil {
+		fmt.Printf("\n Failed to flatten and insert the json array with error %s", err.Error())
+	}
 }
 
 
 func main() {
-        // Allocate and initialize the TimeSeriesClientData structure for TimeSeriesDB access
-        timeserData := NewTimeSeriesClientData("testdb", "", "")
+	// Allocate and initialize the TimeSeriesClientData structure for TimeSeriesDB access
+	tsCli = NewTimeSeriesClient(bucketName, orgName)
 
-        // TimeSeriesDB specific intialization start
-        err := timeserData.CreateTimeSeriesConnection()
-        if err != nil {
-                return
-        }
-        err = timeserData.CreateTimeSeriesDB()
-        if err != nil {
-                return
-        }
+	// TimeSeriesDB specific intialization start
+	err := tsCli.CreateTimeSeriesConnection()
+	if err != nil {
+		fmt.Println("Error in connection", err)
+	}
+	
+	err = tsCli.CreateTimeSeriesDB()
+	if err != nil {
+		return
+	}
 
-        TestTimeSeriesDbGetSet(timeserData)
-        TestTimeSeriesDbJsonArrayFlatten(timeserData)
+	TestTimeSeriesDbGetSet(timeserData)
+	TestTimeSeriesDbJsonArrayFlatten(timeserData)
 }
 ```
 
 ## Output of example shown above
 ```
-Connected to http://localhost:8086 version 1.8.0
-TimeSeriesDB shell version: 1.8.0
-> show databases
-name: databases
-name
-----
-_internal
-testdb
+ $ influx version
+Influx CLI 2.3.0 (git: 88ba346) build_date: 2022-04-06T19:30:53Z
 
-> use testdb
-Using database testdb
+ $ influx bucket list
+ID                      Name            Retention       Shard group duration    Organization ID         Schema Type
+2568bdd55a346a6d        _monitoring     168h0m0s        24h0m0s                 80dede022b0caa14        implicit
+2e1672b50af12e4b        _tasks          72h0m0s         24h0m0s                 80dede022b0caa14        implicit
+9b11cc21b65914dc        default         infinite        168h0m0s                80dede022b0caa14        implicit
+dfae9c804560b55d        testDB          infinite        168h0m0s                80dede022b0caa14        implicit
 
-> show measurements
-name: measurements
-name
-----
-FlattenJsonArrayTable
-SetGetTable
+ $ influx query -f show_measurement.flux
+Result: _result
+Table: keys: []
+         _value:string
+----------------------
+ FlattenJsonArrayTable
+          FlattenTable
+           SetGetTable
 
-> select * from FlattenJsonArrayTable
-name: FlattenJsonArrayTable
-time                CID                Cell-RF.rsSinr Cell-RF.rsp Cell-RF.rsrq
-----                ---                -------------- ----------- ------------
-1629174962020974506 310-680-200-555001 -2.5           -90         -13
-1629174962021005924 310-680-200-555003 -6             -140        -17
+ $ influx query -f select_all_from_FlattenJsonArrayTable.flux
+Result: _result
+Table: keys: [_start, _stop, _field, _measurement]
+                   _start:time                      _stop:time           _field:string     _measurement:string                      _time:time           _value:string
+------------------------------  ------------------------------  ----------------------  ----------------------  ------------------------------  ----------------------
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z                     CID   FlattenJsonArrayTable  2022-08-22T04:37:22.100587964Z      310-680-200-555001
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z                     CID   FlattenJsonArrayTable  2022-08-22T04:37:22.107882054Z      310-680-200-555003
+Table: keys: [_start, _stop, _field, _measurement]
+                   _start:time                      _stop:time           _field:string     _measurement:string                      _time:time                  _value:float
+------------------------------  ------------------------------  ----------------------  ----------------------  ------------------------------  ----------------------------
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z          Cell-RF.rsSinr   FlattenJsonArrayTable  2022-08-22T04:37:22.100587964Z                          -2.5
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z          Cell-RF.rsSinr   FlattenJsonArrayTable  2022-08-22T04:37:22.107882054Z                            -6
+Table: keys: [_start, _stop, _field, _measurement]
+                   _start:time                      _stop:time           _field:string     _measurement:string                      _time:time                  _value:float
+------------------------------  ------------------------------  ----------------------  ----------------------  ------------------------------  ----------------------------
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z             Cell-RF.rsp   FlattenJsonArrayTable  2022-08-22T04:37:22.100587964Z                           -90
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z             Cell-RF.rsp   FlattenJsonArrayTable  2022-08-22T04:37:22.107882054Z                          -140
+Table: keys: [_start, _stop, _field, _measurement]
+                   _start:time                      _stop:time           _field:string     _measurement:string                      _time:time                  _value:float
+------------------------------  ------------------------------  ----------------------  ----------------------  ------------------------------  ----------------------------
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z            Cell-RF.rsrq   FlattenJsonArrayTable  2022-08-22T04:37:22.100587964Z                           -13
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:41:12.526240071Z            Cell-RF.rsrq   FlattenJsonArrayTable  2022-08-22T04:37:22.107882054Z                           -17
 
-> select * from SetGetTable
-name: SetGetTable
-time                a
-----                -
-1629174961982801050 3
-1629174962011419370 2
+
+ $ influx query -f select_all_from_SetGetTable.flux
+Result: _result
+Table: keys: [_start, _stop, _field, _measurement]
+                   _start:time                      _stop:time           _field:string     _measurement:string                      _time:time           _value:string
+------------------------------  ------------------------------  ----------------------  ----------------------  ------------------------------  ----------------------
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:42:26.844404934Z                       a             SetGetTable  2022-08-22T04:37:09.476426192Z                     "3"
+2021-01-01T00:00:00.000000000Z  2022-08-22T04:42:26.844404934Z                       a             SetGetTable  2022-08-22T04:37:09.512062279Z                     "2"
 
 ```
+## Output of example can be shown by influx web UI also.
+![](./docs/figs/influxdb2_webui.png)
+
+
