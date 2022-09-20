@@ -1,5 +1,6 @@
 //
 // Copyright 2022 Parallel Wireless
+// Copyright 2022 Samsung Electronics Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,204 +15,240 @@
 // limitations under the License.
 //
 
-//  This source code is part of the near-RT RIC (RAN Intelligent Controller)
-//  platform project (RICP).
-package stslgo_test
+// This source code is part of the near-RT RIC (RAN Intelligent Controller)
+// platform project (RICP).
+package stslgo
 
 import (
-	"encoding/json"
 	"fmt"
-	"stslgo"
+	"os"
 	"testing"
-
-	_ "github.com/influxdata/influxdb1-client"
-	"github.com/influxdata/influxdb1-client/models"
-	timesrclient "github.com/influxdata/influxdb1-client/v2"
+	"time"
 )
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     Mock Client And Its Methods
-//                   Mock client structure implements the timesrclient.Iclient interface
-//                   and mocks responses instead of using the TimeSeriesDB provided GO library.
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-type MockClient struct{}
+var (
+	serverURL string
+	authToken string
+	orgName   string
+	dbName    string
+)
 
-func (c *MockClient) Close() error {
-	return nil
+func getEnvValue(key, defVal string) string {
+	if val, ok := os.LookupEnv(key); ok {
+		return val
+	} else {
+		return defVal
+	}
 }
 
-// Dynamic function for queryResponse so that based on the test case different outputs can be simulated
-var queryResp func(q timesrclient.Query) (*timesrclient.Response, error)
-
-func (c *MockClient) Query(q timesrclient.Query) (*timesrclient.Response, error) {
-	return queryResp(q)
-}
-
-func (c *MockClient) Write(bp timesrclient.BatchPoints) error {
-	return nil
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                    Test & utility functions for the stslgo GO module
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Change to false when testing without authentication (default authentication is enabled for TimeSeriesDB)
-var auth bool = true
-
-// Setup the test environment using the mock interface
-func setupIclientTest(timeserData *stslgo.TimeSeriesClientData) {
-	var iclientIntf stslgo.TimeSeriesDataGoClient
-	iclientIntf = &MockClient{}
-	(*timeserData).Iclient = iclientIntf
-}
-
-// Setup the test environment using the TimeSeriesdb interface
-func setupIclient(timeserData *stslgo.TimeSeriesClientData) {
-	_ = timeserData.CreateTimeSeriesConnection()
+func init() {
+	serverURL = getEnvValue("TIMESERIESDB_SERVICE_HOST", "http://localhost:8086")
+	authToken = getEnvValue("TIMESERIESDB_SERVICE_TOKEN", "my-token")
+	orgName = getEnvValue("TIMESERIESDB_SERVICE_ORG_NAME", "influxdata")
+	dbName = getEnvValue("TIMESERIESDB_DB_NAME ", "default")
 }
 
 // Setup the test environment for each test case
-func setup() (timeserData *stslgo.TimeSeriesClientData, err error) {
-	queryResp = func(q timesrclient.Query) (*timesrclient.Response, error) {
-		result := timesrclient.Result{}
-		resp := timesrclient.Response{}
-		resp.Results = append(resp.Results, result)
-		return &resp, nil
+func setup(t *testing.T) (tsCli *TimeSeriesClientData, err error) {
+	// Allocate and initialize the TimeSeriesClient structure for TimeSeriesDB access
+	tsCli = NewTimeSeriesClientData(dbName)
+
+	// Setup the test environment using the TimeSeriesdb interface
+	err = tsCli.CreateTimeSeriesConnection()
+	if err != nil {
+		fmt.Println("Error in connection", err)
 	}
 
-	// Allocate and initialize the TimeSeriesClientData structure for TimeSeriesDB access
-	timeserData = stslgo.NewTimeSeriesClientData("testdb", "testuser", "testpasswd")
-
-	// IMP - Replace with setupIclient when running TimeSeriesDB is to be used instead of mock
-	setupIclientTest(timeserData)
-
-	if false == auth {
-		// Create testdb
-		err = timeserData.CreateTimeSeriesDB()
-		if err != nil {
-			return nil, err
-		}
-
-		err = timeserData.CreateRetentionPolicy("testdbrp", "2h", true)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return timeserData, err
+	// Create testdb
+	tsCli.CreateTimeSeriesDB()
+	return tsCli, err
 }
 
-// Setup the test environment for each test case
-func setupWithRetentionPolicy() (timeserData *stslgo.TimeSeriesClientData, err error) {
-	queryResp = func(q timesrclient.Query) (*timesrclient.Response, error) {
-		result := timesrclient.Result{}
-		resp := timesrclient.Response{}
-		resp.Results = append(resp.Results, result)
-		return &resp, nil
-	}
-
-	// Allocate and initialize the TimeSeriesClientData structure for TimeSeriesDB access
-	timeserData = stslgo.NewTimeSeriesClientData("test2db", "test2user", "test2passwd")
-
-	// IMP - Replace with setupIclient when running TimeSeriesDB is to be used instead of mock
-	setupIclientTest(timeserData)
-
-	if false == auth {
-		// Create testdb
-		err = timeserData.CreateTimeSeriesDBWithRetentionPolicy("test2rp", "1h")
-		if err != nil {
-			return nil, err
-		}
-	}
-	return timeserData, err
-}
-
-// Test function to test basic get/set functions on TimeSeriesDB
-func TestTimeSeriesDbGetSet(t *testing.T) {
-	timeserData, err := setup()
+func TestTimeSeriesDbCreate(t *testing.T) {
+	tsCli, err := setup(t)
 	if err != nil {
 		fmt.Println("Error in setup", err)
 	}
 
-	tableName := "SetGetTable"
-	val := "3"
-	newval, err := json.Marshal(&val)
-	err = timeserData.Set(tableName, "a", newval)
+	err = tsCli.CreateTimeSeriesDBWithRetentionPolicy("24h")
 	if err != nil {
-		fmt.Printf("Unable to set data with error %v\n", err)
+		fmt.Println("Error in create DB", err)
 	}
-
-	val = "2"
-	newval, err = json.Marshal(&val)
-	err = timeserData.Set(tableName, "a", newval)
+}
+func TestTimeSeriesDbDelete(t *testing.T) {
+	tsCli, err := setup(t)
 	if err != nil {
-		fmt.Printf("Unable to set data with error %v\n", err)
+		fmt.Println("Error in setup", err)
 	}
 
-	queryResp = func(q timesrclient.Query) (*timesrclient.Response, error) {
-		result := timesrclient.Result{}
-
-		var values [][]interface{}
-		var value []interface{}
-		value = append(value, "2021-08-20T05:47:46.275224998Z", "2")
-		values = append(values, value)
-
-		row := models.Row{Name: "SetGetTable", Columns: []string{"time", "a"}, Partial: false, Values: values}
-		result.Series = append(result.Series, row)
-		result.Err = ""
-
-		resp := timesrclient.Response{}
-		resp.Results = append(resp.Results, result)
-		resp.Err = ""
-		return &resp, nil
-	}
-
-	result, err := timeserData.Get(tableName, "a")
+	err = tsCli.DeleteTimeSeriesDB()
 	if err != nil {
-		fmt.Printf("Unable to get data with error %v\n", err)
-		return
-	}
-
-	switch mytype := result.(type) {
-	default:
-		fmt.Printf("My type is %T and value %v\n", mytype, mytype)
-	}
-
-	err = timeserData.DropMeasurement(tableName)
-	if err != nil {
-		fmt.Printf("Unable to delete measurement with error %v\n", err)
-		return
+		fmt.Println("Error in delete DB", err)
 	}
 }
 
-// Test function for testing flattening and inserting of a json array as individual time points
+func TestTimeSeriesDbUpdate(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	err = tsCli.UpdateTimeSeriesDBRetentionPolicy("")
+	if err != nil {
+		fmt.Println("Error in delete DB", err)
+	}
+}
+
+func TestTimeSeriesDbWritePoint(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	err = tsCli.WritePoint("testMeasurement",
+		map[string]string{
+			"tagKey1": "tagVal_a",
+		},
+		map[string]interface{}{
+			"fieldKey1": 3,
+		})
+	if err != nil {
+		fmt.Println("Error in delete DB", err)
+	}
+}
+
+func TestTimeSeriesDbUpdateRetentionPolicy(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	RP := tsCli.timeSeriesDB.RetentionPolicy
+	if RP == "" {
+		RP = "infinite"
+	}
+	fmt.Println("from : ", RP)
+	err = tsCli.UpdateTimeSeriesDBRetentionPolicy("24h")
+	if err != nil {
+		fmt.Println("Error in delete DB", err)
+	}
+
+	RP = tsCli.timeSeriesDB.RetentionPolicy
+	if RP == "" {
+		RP = "infinite"
+	}
+	fmt.Println("to : ", RP)
+}
+
+func TestTimeSeriesDbDropMeasurement(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	err = tsCli.DropMeasurement("testMeasurement")
+	if err != nil {
+		fmt.Println("Error in delete DB", err)
+	}
+}
+
+func TestTimeSeriesSetAndGet(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	tableName := "FloatSetGetTable"
+	val := 2.0
+	err = tsCli.Set(tableName, "a", val)
+	if err != nil {
+		fmt.Printf("Unable to set data with error %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	result, err := tsCli.Get(tableName, "a")
+	if err != nil {
+		fmt.Printf("Unable to get data with error %v", err)
+		return
+	}
+	fmt.Printf("Result = %v, type = %T \n", result, result)
+
+	newFloatVal := 33.3
+	err = tsCli.Set(tableName, "a", newFloatVal)
+	if err != nil {
+		fmt.Printf("Unable to set data with error %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	result, err = tsCli.Get(tableName, "a")
+	if err != nil {
+		fmt.Printf("Unable to get data with error %v", err)
+		return
+	}
+	fmt.Printf("Result = %v, type = %T \n", result, result)
+}
+
+func TestTimeSeriesGenericQuery(t *testing.T) {
+	tsCli, err := setup(t)
+	if err != nil {
+		fmt.Println("Error in setup", err)
+	}
+
+	err = tsCli.WritePoint("testMeasurement",
+		map[string]string{
+			"tagKey1": "tagVal_a",
+		},
+		map[string]interface{}{
+			"fieldKey1": 3,
+		})
+	if err != nil {
+		fmt.Println("Error in delete DB", err)
+	}
+
+	measurement := "testMeasurement"
+	flux := fmt.Sprintf(`
+	from(bucket: "%s") 
+	|> range(start: -24h) 
+	|> filter(fn: (r) => r._measurement == "%s")
+	`, dbName, measurement)
+
+	resp, err := tsCli.Query(flux)
+	if err == nil {
+		// Iterate over query response
+		for resp.Next() {
+			// Access data
+			fmt.Printf("value: %v\n", resp.Record().Value())
+		}
+		// check for an error
+		if resp.Err() != nil {
+			fmt.Printf("query parsing error: %s\n", resp.Err().Error())
+		}
+	} else {
+		fmt.Printf("Unable to query data with error %v\n", err)
+	}
+}
+
 func TestTimeSeriesDbJsonArrayFlatten(t *testing.T) {
-	timeserData, err := setup()
+	tsCli, err := setup(t)
 	if err != nil {
 		fmt.Println("Error in setup", err)
 		return
-	}
-
-	if false == auth {
-		// Alter the testDB retention policy
-		err = timeserData.UpdateRetentionPolicy("testdbrp", "1h", true)
-		if err != nil {
-			fmt.Println("Error in updating retention policy", err)
-			return
-		}
 	}
 
 	// Array of two rows
 	neighborCells := []byte(`[{"CID": "310-680-200-555001", "Cell-RF": {"rsp": -90, "rsrq": -13, "rsSinr": -2.5}}, {"CID": "310-680-200-555003", "Cell-RF": {"rsp": -140, "rsrq": -17, "rsSinr": -6}}]`)
 	ignoreKeyList := []string{}
 
-	err = timeserData.InsertJsonArray("FlattenJsonArrayTable", ignoreKeyList, neighborCells)
+	err = tsCli.InsertJsonArray("FlattenJsonArrayTable", ignoreKeyList, neighborCells)
 	if err != nil {
 		fmt.Printf("\n Failed to flatten and insert the json array with error %s", err.Error())
 	}
 }
 
 func TestTimeSeriesDbFlatten(t *testing.T) {
-	timeserData, err := setupWithRetentionPolicy()
+	tsCli, err := setup(t)
 	if err != nil {
 		fmt.Println("Error in setup", err)
 	}
@@ -226,8 +263,18 @@ func TestTimeSeriesDbFlatten(t *testing.T) {
                       }}`)
 	ignoreKeyListMsg := []string{"floatdata", "key2"}
 
-	err = timeserData.InsertJson("FlattenTable", ignoreKeyListMsg, msg)
+	err = tsCli.InsertJson("FlattenTable", ignoreKeyListMsg, msg)
 	if err != nil {
 		fmt.Printf("\n Failed to flatten and insert the json array with error %s", err.Error())
 	}
+}
+
+func TestRPIntToString(t *testing.T) {
+	rp := "3w4d12m30s"
+	rpi, err := rpStringToInt64(rp)
+	if err != nil {
+		fmt.Println(err)
+	}
+	rps := rpInt64ToString(rpi)
+	fmt.Printf("rp : %s, rpi : %d, rps : %s \n", rp, rpi, rps)
 }
