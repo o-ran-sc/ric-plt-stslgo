@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "a0399ba9_580071de",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001907
+      },
+      "writtenOn": "2022-09-20T02:32:24Z",
+      "side": 1,
+      "message": "A new commit(stslgo) targeting the master branch is pushed.",
+      "revId": "42ad7da4e5b29516ab154618b1be4c2f17b1c3d6",
+      "serverId": "84e4e190-e623-4c37-9eda-58b1937c1b53"
+    }
+  ]
+}
